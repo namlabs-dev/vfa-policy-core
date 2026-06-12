@@ -1,0 +1,122 @@
+name: VFA Gate (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      policy-file:
+        description: Path to vfa-policy.yml in caller repo
+        required: false
+        default: vfa-policy.yml
+        type: string
+      adapter-file:
+        description: Path to vfa-adapter.yml in caller repo
+        required: false
+        default: vfa-adapter.yml
+        type: string
+    outputs:
+      result:
+        description: Gate result — passed | warned | failed
+        value: ${{ jobs.gate.outputs.result }}
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      result: ${{ steps.evaluate.outputs.result }}
+
+    steps:
+      - name: Checkout caller repo
+        uses: actions/checkout@v4
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install js-yaml
+        run: npm install js-yaml --no-save --silent
+
+      # Write the gate runner to a temp file so quoting stays clean
+      - name: Write gate runner
+        run: |
+          cat > /tmp/vfa-gate.js << 'EOF'
+          const yaml   = require('js-yaml');
+          const fs     = require('fs');
+          const { execSync } = require('child_process');
+
+          const policy  = yaml.load(fs.readFileSync(process.env.POLICY_FILE,  'utf8'));
+          const adapter = yaml.load(fs.readFileSync(process.env.ADAPTER_FILE, 'utf8'));
+
+          const enforce = policy.enforce !== false;   // default true
+          let   warned  = false;
+
+          function run(label, cmd, failSoft = false) {
+            console.log(`\n${'─'.repeat(60)}\n▶  ${label}\n${'─'.repeat(60)}`);
+            try {
+              execSync(cmd, { stdio: 'inherit', shell: '/bin/bash' });
+            } catch (e) {
+              if (!enforce || failSoft) {
+                console.warn(`⚠  ${label} failed — enforce=false, continuing`);
+                warned = true;
+              } else {
+                console.error(`✖  ${label} failed`);
+                process.exit(1);
+              }
+            }
+          }
+
+          // ── Scan ────────────────────────────────────────────────────
+          const blockSev = policy.security?.block_on_severity ?? [];
+          // gitleaks exits non-zero when secrets found → treat as hard fail
+          // when enforce=true and blockSev is non-empty
+          run('Security scan', adapter.scan, blockSev.length === 0 || !enforce);
+
+          // ── Lint ────────────────────────────────────────────────────
+          run('Lint', adapter.lint);
+
+          // ── Build ───────────────────────────────────────────────────
+          run('Build', adapter.build);
+
+          // ── Test ────────────────────────────────────────────────────
+          run('Test', adapter.test);
+
+          // ── Coverage gate ───────────────────────────────────────────
+          console.log('\n' + '─'.repeat(60) + '\n▶  Coverage check\n' + '─'.repeat(60));
+          try {
+            const raw    = execSync(adapter.coverage_cmd, { shell: '/bin/bash' }).toString().trim();
+            const actual = parseFloat(raw);
+            const min    = policy.coverage?.minimum ?? 0;
+            const target = policy.coverage?.target  ?? min;
+
+            console.log(`   Actual : ${actual}%`);
+            console.log(`   Minimum: ${min}%   Target: ${target}%`);
+
+            if (actual < min) {
+              const msg = `Coverage ${actual}% is below minimum ${min}%`;
+              if (enforce) { console.error(`✖  ${msg}`); process.exit(1); }
+              console.warn(`⚠  ${msg} (enforce=false)`);
+              warned = true;
+            } else if (actual < target) {
+              console.warn(`⚠  Coverage ${actual}% is below target ${target}% (not blocking)`);
+            } else {
+              console.log(`✔  Coverage OK`);
+            }
+          } catch (e) {
+            console.warn('⚠  Could not determine coverage:', e.message);
+            warned = true;
+          }
+
+          // ── Result ──────────────────────────────────────────────────
+          const result = warned ? 'warned' : 'passed';
+          console.log(`\n${'═'.repeat(60)}`);
+          console.log(`   Gate result: ${result.toUpperCase()}`);
+          console.log('═'.repeat(60));
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `result=${result}\n`);
+          EOF
+
+      - name: Run gate
+        id: evaluate
+        run: node /tmp/vfa-gate.js
+        env:
+          POLICY_FILE:  ${{ inputs.policy-file }}
+          ADAPTER_FILE: ${{ inputs.adapter-file }}

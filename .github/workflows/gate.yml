@@ -1,0 +1,13 @@
+name: PR Gate
+
+on:
+  pull_request:
+    branches: [develop, master]
+
+jobs:
+  gate:
+    uses: your-org/vfa-governance-core/.github/workflows/gate.reusable.yml@v1
+    with:
+      policy-file: vfa-policy.yml
+      adapter-file: vfa-adapter.yml
+    secrets: inherit

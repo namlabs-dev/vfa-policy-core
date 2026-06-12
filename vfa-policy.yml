@@ -1,0 +1,6 @@
+layer: 3
+enforce: false
+coverage: { minimum: 50, target: 80 }
+security: { block_on_severity: [critical, high] }
+reviews: { min_reviewers: 1 }
+override: { enabled: true, authorized_roles: [senior, dm, pm], require_reason: true }
