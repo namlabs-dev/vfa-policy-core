@@ -120,3 +120,4 @@ jobs:
         env:
           POLICY_FILE:  ${{ inputs.policy-file }}
           ADAPTER_FILE: ${{ inputs.adapter-file }}
+          NODE_PATH: ${{ github.workspace }}/node_modules
